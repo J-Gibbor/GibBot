@@ -1,7 +1,7 @@
 {
   "botMode": "private",
   "permittedUsers": {
-    "2349012345678@s.whatsapp.net": ["!tagall","!hidetag","!sticker"],
+    "2349021540840@s.whatsapp.net": ["!tagall","!hidetag","!sticker"],
     "2349012345679@s.whatsapp.net": ["!vv","!saveprofile"]
 },
   "autoReply": {
@@ -18,10 +18,10 @@
       "congrats": ["Congratulations! 🎉", "Well done! 👏", "Awesome! 🎊"],
       "sorry": ["It's okay! 🤗", "No worries! 🙏", "All good! 🙂"]
     },
-    "welcome": { "enabled": true },
+  "welcome": { "enabled": true },
   "goodbye": { "enabled": true },
   "antiLinks": { "enabled": true },
-  "autoReply": { "enabled": true },
+  "autoReply": { "enabled": true }
 }
 
 }
