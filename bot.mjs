@@ -36,6 +36,11 @@ autoreply:true
 analytics:{groups:{}}
 }
 
+db.plugins = db.plugins || {}
+db.owners = db.owners || ["2349021540840@s.whatsapp.net"]
+db.settings = db.settings || {}
+db.warnings = db.warnings || {}
+
 if(fs.existsSync(DB_FILE)){
 db=JSON.parse(fs.readFileSync(DB_FILE))
 }
@@ -48,8 +53,13 @@ fs.writeFileSync(DB_FILE,JSON.stringify(db,null,2))
 //////////////// EXPRESS DASHBOARD //////////////////
 ////////////////////////////////////////////////////
 
-const app=express()
+const app = express()
+
+// parse JSON
 app.use(express.json())
+
+// parse HTML form submissions
+app.use(express.urlencoded({ extended: true }))
 
 let logged=false
 
@@ -141,11 +151,27 @@ setInterval(load,3000)
 
 app.post("/login",(req,res)=>{
 
-if(req.body.password===DASH_PASSWORD){
-logged=true
+try{
+
+const password = req.body.password
+
+if(password === DASH_PASSWORD){
+
+logged = true
 res.redirect("/")
+
 }else{
-res.send("Wrong password")
+
+res.status(401).send("❌ Wrong password")
+
+}
+
+}catch(err){
+
+console.error("Login error:",err)
+
+res.status(500).send("Dashboard error")
+
 }
 
 })
@@ -154,27 +180,30 @@ app.get("/plugins",(req,res)=>res.json(db.plugins))
 
 app.post("/install-plugin",(req,res)=>{
 
-let {name,response,permission}=req.body
+try{
 
-db.plugins[name]={
+let {name,response,permission} = req.body
+
+if(!name || !response){
+return res.status(400).json({error:"Missing fields"})
+}
+
+db.plugins[name] = {
 response,
-permission,
+permission: permission || "user",
 enabled:true
 }
 
 saveDB()
 
-res.json({ok:true})
+res.json({success:true})
 
-})
+}catch(err){
 
-app.post("/delete-plugin",(req,res)=>{
+console.error(err)
+res.status(500).json({error:"Plugin install failed"})
 
-delete db.plugins[req.body.name]
-
-saveDB()
-
-res.json({ok:true})
+}
 
 })
 
