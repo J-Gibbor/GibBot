@@ -1,45 +1,42 @@
 import makeWASocket,{
 useMultiFileAuthState,
 fetchLatestBaileysVersion,
-DisconnectReason,
 downloadContentFromMessage
 } from "@whiskeysockets/baileys"
 
 import express from "express"
 import fs from "fs"
-import P from "pino"
 import qrcode from "qrcode-terminal"
+import P from "pino"
+
+////////////////////////////////////////////////////////
 
 const BOT_NAME="GibborLee Bot"
+const OWNER="2349021540840@s.whatsapp.net"
 const PREFIX="."
-const DASH_PASSWORD="RoseBella"
-const PORT=process.env.PORT || 3000
+const PORT=process.env.PORT||3000
+const DASH_PASS="RoseBella"
 
-let sock
-
-////////////////////////////////////////////////////
-//////////////// DATABASE //////////////////////////
-////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
+//////////////// DATABASE //////////////////////////////
+////////////////////////////////////////////////////////
 
 const DB_FILE="./database.json"
 
 let db={
-owners:["2349021540840@s.whatsapp.net"],
+owners:[OWNER],
 plugins:{},
 warnings:{},
 settings:{
-antilink:true,
+warnSystem:true,
+antiLink:true,
 welcome:true,
 goodbye:true,
-autoreply:true
+wordFilter:true
 },
-analytics:{groups:{}}
+mode:"public",
+stats:{messages:0,commands:0,start:Date.now()}
 }
-
-db.plugins = db.plugins || {}
-db.owners = db.owners || ["2349021540840@s.whatsapp.net"]
-db.settings = db.settings || {}
-db.warnings = db.warnings || {}
 
 if(fs.existsSync(DB_FILE)){
 db=JSON.parse(fs.readFileSync(DB_FILE))
@@ -49,205 +46,166 @@ function saveDB(){
 fs.writeFileSync(DB_FILE,JSON.stringify(db,null,2))
 }
 
-////////////////////////////////////////////////////
-//////////////// EXPRESS DASHBOARD //////////////////
-////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
+//////////////// MEDIA ARCHIVE /////////////////////////
+////////////////////////////////////////////////////////
 
-const app = express()
+const MEDIA_DIR="./archive"
 
-// parse JSON
+if(!fs.existsSync(MEDIA_DIR)){
+fs.mkdirSync(MEDIA_DIR)
+}
+
+async function saveMedia(type,buffer){
+
+let ext=type.includes("image")?"jpg":"mp4"
+let name=Date.now()+"."+ext
+let path=MEDIA_DIR+"/"+name
+
+fs.writeFileSync(path,buffer)
+
+return name
+}
+
+////////////////////////////////////////////////////////
+//////////////// DASHBOARD /////////////////////////////
+////////////////////////////////////////////////////////
+
+const app=express()
+
 app.use(express.json())
-
-// parse HTML form submissions
-app.use(express.urlencoded({ extended: true }))
+app.use(express.urlencoded({extended:true}))
+app.use("/archive",express.static("./archive"))
 
 let logged=false
+let liveMessages=[]
 
 app.get("/",(req,res)=>{
 
 if(!logged){
+
 return res.send(`
-<h2>${BOT_NAME} Login</h2>
+<h2>${BOT_NAME} Dashboard</h2>
+
 <form method="POST" action="/login">
-<input type="password" name="password"/>
+<input name="password" type="password"/>
 <button>Login</button>
 </form>
 `)
+
 }
 
 res.send(`
-<h1>🤖 ${BOT_NAME} Dashboard</h1>
 
-<h3>Plugins</h3>
-<div id="plugins"></div>
+<h1>${BOT_NAME} Dashboard</h1>
 
-<input id="cmd">
-<input id="reply">
+<h2>Bot Stats</h2>
+<div id="stats"></div>
 
-<select id="perm">
-<option value="user">User</option>
-<option value="admin">Admin</option>
-<option value="owner">Owner</option>
-</select>
+<h2>Live Messages</h2>
+<div id="live"></div>
 
-<button onclick="add()">Add Plugin</button>
+<h2>Media Archive</h2>
+
+<input id="search">
+<button onclick="search()">Search</button>
+
+<div id="media"></div>
 
 <script>
 
-async function load(){
+async function loadStats(){
 
-let data=await fetch("/plugins").then(r=>r.json())
+let s=await fetch("/stats").then(r=>r.json())
+
+document.getElementById("stats").innerHTML=
+"Messages: "+s.messages+"<br>"+
+"Commands: "+s.commands+"<br>"+
+"Uptime: "+Math.floor(s.uptime/1000)+"s"
+
+}
+
+async function loadMessages(){
+
+let m=await fetch("/live").then(r=>r.json())
 
 let html=""
 
-for(let p in data){
-
-html+=\`
-<div>
-.\${p} - \${data[p].permission}
-<button onclick="del('\${p}')">Delete</button>
-</div>
-\`
-
-}
-
-document.getElementById("plugins").innerHTML=html
-
-}
-
-async function add(){
-
-let name=document.getElementById("cmd").value
-let response=document.getElementById("reply").value
-let permission=document.getElementById("perm").value
-
-await fetch("/install-plugin",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({name,response,permission})
+m.forEach(x=>{
+html+="<div>"+x.sender+": "+x.text+"</div>"
 })
 
-load()
+document.getElementById("live").innerHTML=html
 
 }
 
-async function del(name){
+async function search(){
 
-await fetch("/delete-plugin",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({name})
+let q=document.getElementById("search").value
+
+let files=await fetch("/search-media?q="+q).then(r=>r.json())
+
+let html=""
+
+files.forEach(f=>{
+html+=\`<div><a target="_blank" href="/archive/\${f}">\${f}</a></div>\`
 })
 
-load()
+document.getElementById("media").innerHTML=html
 
 }
 
-setInterval(load,3000)
+setInterval(loadStats,2000)
+setInterval(loadMessages,2000)
 
 </script>
+
 `)
+
 })
 
 app.post("/login",(req,res)=>{
 
-try{
+if(req.body.password===DASH_PASS){
 
-const password = req.body.password
-
-if(password === DASH_PASSWORD){
-
-logged = true
+logged=true
 res.redirect("/")
 
 }else{
-
-res.status(401).send("❌ Wrong password")
-
-}
-
-}catch(err){
-
-console.error("Login error:",err)
-
-res.status(500).send("Dashboard error")
-
+res.send("Wrong password")
 }
 
 })
 
-app.get("/plugins",(req,res)=>res.json(db.plugins))
+app.get("/stats",(req,res)=>{
 
-app.post("/install-plugin",(req,res)=>{
+res.json({
+messages:db.stats.messages,
+commands:db.stats.commands,
+uptime:Date.now()-db.stats.start
+})
 
-try{
+})
 
-let {name,response,permission} = req.body
+app.get("/live",(req,res)=>res.json(liveMessages))
 
-if(!name || !response){
-return res.status(400).json({error:"Missing fields"})
-}
+app.get("/search-media",(req,res)=>{
 
-db.plugins[name] = {
-response,
-permission: permission || "user",
-enabled:true
-}
+let q=req.query.q||""
 
-saveDB()
+let files=fs.readdirSync("./archive")
 
-res.json({success:true})
-
-}catch(err){
-
-console.error(err)
-res.status(500).json({error:"Plugin install failed"})
-
-}
+res.json(files.filter(f=>f.includes(q)))
 
 })
 
 app.listen(PORT,()=>console.log("Dashboard running"))
 
-////////////////////////////////////////////////////
-//////////////// WHATSAPP BOT //////////////////////
-////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
+//////////////// WHATSAPP BOT //////////////////////////
+////////////////////////////////////////////////////////
 
-function isOwner(id){
-return db.owners.includes(id)
-}
-
-async function isAdmin(group,user){
-
-let meta=await sock.groupMetadata(group)
-
-let admins=meta.participants
-.filter(p=>p.admin)
-.map(p=>p.id)
-
-return admins.includes(user)
-
-}
-
-////////////////////////////////////////////////////
-//////////////// AUTO REPLIES //////////////////////
-////////////////////////////////////////////////////
-
-const autoReplies={
-hello:["Hello 👋","Hi there!","Hey!","Greetings 😊"],
-hi:["Hi 👋","Hello!","Hey there!"],
-bot:["Yes I'm here 🤖","Bot active","Ready!"],
-thanks:["You're welcome","No problem","Glad to help"],
-bye:["Goodbye 👋","See you later","Take care"]
-}
-
-function random(arr){
-return arr[Math.floor(Math.random()*arr.length)]
-}
-
-////////////////////////////////////////////////////
-//////////////// START BOT /////////////////////////
-////////////////////////////////////////////////////
+let sock
 
 async function start(){
 
@@ -256,47 +214,33 @@ const {state,saveCreds}=await useMultiFileAuthState("session")
 const {version}=await fetchLatestBaileysVersion()
 
 sock=makeWASocket({
-version,
 auth:state,
+version,
 logger:P({level:"silent"})
 })
 
 sock.ev.on("creds.update",saveCreds)
 
-sock.ev.on("connection.update",(update)=>{
+sock.ev.on("connection.update",(u)=>{
 
-let {connection,qr,lastDisconnect}=update
-
-if(qr){
-qrcode.generate(qr,{small:true})
-}
-
-if(connection==="close"){
-
-if(lastDisconnect?.error?.output?.statusCode!==DisconnectReason.loggedOut){
-start()
-}
-
+if(u.qr){
+qrcode.generate(u.qr,{small:true})
 }
 
 })
 
-////////////////////////////////////////////////////
-//////////////// GROUP EVENTS //////////////////////
-////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
+//////////////// GROUP EVENTS //////////////////////////
+////////////////////////////////////////////////////////
 
-sock.ev.on("group-participants.update",async(data)=>{
+sock.ev.on("group-participants.update",async data=>{
 
-let meta=await sock.groupMetadata(data.id)
-
-for(let user of data.participants){
-
-let tag="@"+user.split("@")[0]
+let user=data.participants[0]
 
 if(data.action==="add" && db.settings.welcome){
 
-await sock.sendMessage(data.id,{
-text:`👋 Welcome ${tag} to *${meta.subject}*`,
+sock.sendMessage(data.id,{
+text:`👋 Welcome @${user.split("@")[0]}`,
 mentions:[user]
 })
 
@@ -304,25 +248,22 @@ mentions:[user]
 
 if(data.action==="remove" && db.settings.goodbye){
 
-await sock.sendMessage(data.id,{
-text:`👋 Goodbye ${tag}`,
+sock.sendMessage(data.id,{
+text:`👋 Goodbye @${user.split("@")[0]}`,
 mentions:[user]
 })
 
 }
 
-}
-
 })
 
-////////////////////////////////////////////////////
-//////////////// MESSAGE HANDLER ///////////////////
-////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
+//////////////// MESSAGE HANDLER ///////////////////////
+////////////////////////////////////////////////////////
 
 sock.ev.on("messages.upsert",async({messages})=>{
 
 let m=messages[0]
-
 if(!m.message) return
 
 let from=m.key.remoteJid
@@ -333,85 +274,41 @@ m.message.conversation||
 m.message.extendedTextMessage?.text||
 ""
 
-////////////////////////////////////////////////////
-//// AUTO REPLY
-////////////////////////////////////////////////////
+db.stats.messages++
 
-if(db.settings.autoreply){
+liveMessages.unshift({sender,text})
+if(liveMessages.length>50) liveMessages.pop()
 
-let lower=text.toLowerCase()
+////////////////////////////////////////////////////////
+//////////// HD PROFILE PICTURE ARCHIVE ////////////////
+////////////////////////////////////////////////////////
 
-for(let k in autoReplies){
+try{
 
-if(lower.includes(k)){
+let pp=await sock.profilePictureUrl(sender,"image")
 
-sock.sendMessage(from,{text:random(autoReplies[k])})
+let file="./archive/pp_"+sender.split("@")[0]+".jpg"
 
-}
+if(!fs.existsSync(file)){
 
-}
+let r=await fetch(pp)
+let b=Buffer.from(await r.arrayBuffer())
 
-}
-
-////////////////////////////////////////////////////
-//// COMMANDS
-////////////////////////////////////////////////////
-
-if(!text.startsWith(PREFIX)) return
-
-let command=text.slice(1).split(" ")[0]
-
-////////////////////////////////////////////////////
-//// MENU
-////////////////////////////////////////////////////
-
-if(command==="menu"){
-
-sock.sendMessage(from,{
-text:`
-🤖 *${BOT_NAME}*
-
-📌 General
-.menu
-.ping
-
-👁 Media
-.vv
-.savepp
-.status
-
-🛡 Admin
-.warn
-.antilink
-
-⚙ Plugins
-Install commands from dashboard
-`
-})
+fs.writeFileSync(file,b)
 
 }
 
-////////////////////////////////////////////////////
-//// PING
-////////////////////////////////////////////////////
+}catch{}
 
-if(command==="ping"){
-sock.sendMessage(from,{text:"🏓 Pong"})
-}
+////////////////////////////////////////////////////////
+//////////// INVISIBLE VIEW ONCE SAVER //////////////////
+////////////////////////////////////////////////////////
 
-////////////////////////////////////////////////////
-//// VIEW ONCE
-////////////////////////////////////////////////////
+let viewOnce=
+m.message?.viewOnceMessage?.message||
+m.message?.viewOnceMessageV2?.message
 
-if(command==="vv"){
-
-let quoted=m.message?.extendedTextMessage?.contextInfo?.quotedMessage
-
-if(!quoted) return
-
-let viewOnce=quoted.viewOnceMessage?.message
-
-if(!viewOnce) return
+if(viewOnce){
 
 let type=Object.keys(viewOnce)[0]
 
@@ -422,59 +319,100 @@ type.replace("Message","")
 
 let buffer=Buffer.from([])
 
-for await(const chunk of stream){
-buffer=Buffer.concat([buffer,chunk])
+for await(const c of stream){
+buffer=Buffer.concat([buffer,c])
 }
 
-await sock.sendMessage(from,{
+await saveMedia(type,buffer)
+
+await sock.sendMessage(OWNER,{
+[type.includes("image")?"image":"video"]:buffer,
+caption:"View once recovered"
+})
+
+}
+
+////////////////////////////////////////////////////////
+//////////// COMMANDS //////////////////////////////////
+////////////////////////////////////////////////////////
+
+if(!text.startsWith(PREFIX)) return
+
+let args=text.slice(1).split(" ")
+let command=args.shift().toLowerCase()
+
+db.stats.commands++
+
+////////////////////////////////////////////////////////
+//////////////// MENU //////////////////////////////////
+////////////////////////////////////////////////////////
+
+if(command==="menu"){
+
+let menu=`
+🤖 *${BOT_NAME}*
+
+📌 GENERAL
+.menu – show menu
+.ping – bot response test
+
+👁 MEDIA
+.vv – save view once
+.savepp – download profile photo
+
+🛡 MODERATION
+.toggle warn
+.toggle antilink
+.toggle welcome
+.toggle goodbye
+.toggle wordfilter
+`
+
+sock.sendMessage(from,{text:menu})
+
+}
+
+////////////////////////////////////////////////////////
+//////////////// PING //////////////////////////////////
+////////////////////////////////////////////////////////
+
+if(command==="ping"){
+sock.sendMessage(from,{text:"Pong"})
+}
+
+////////////////////////////////////////////////////////
+//////////////// VIEW ONCE MANUAL //////////////////////
+////////////////////////////////////////////////////////
+
+if(command==="vv"){
+
+let quoted=m.message?.extendedTextMessage?.contextInfo?.quotedMessage
+if(!quoted) return
+
+let vo=
+quoted.viewOnceMessage?.message||
+quoted.viewOnceMessageV2?.message
+
+if(!vo) return
+
+let type=Object.keys(vo)[0]
+
+let stream=await downloadContentFromMessage(
+vo[type],
+type.replace("Message","")
+)
+
+let buffer=Buffer.from([])
+
+for await(const c of stream){
+buffer=Buffer.concat([buffer,c])
+}
+
+await saveMedia(type,buffer)
+
+await sock.sendMessage(OWNER,{
 [type.includes("image")?"image":"video"]:buffer
 })
-
-}
-
-////////////////////////////////////////////////////
-//// SAVE PROFILE PIC
-////////////////////////////////////////////////////
-
-if(command==="savepp"){
-
-let user=
-m.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0]||sender
-
-let url=await sock.profilePictureUrl(user,"image")
-
-sock.sendMessage(from,{
-image:{url},
-caption:"Profile picture"
-})
-
-}
-
-////////////////////////////////////////////////////
-//// PLUGIN COMMANDS
-////////////////////////////////////////////////////
-
-if(db.plugins[command]){
-
-let p=db.plugins[command]
-
-if(!p.enabled) return
-
-if(p.permission==="owner" && !isOwner(sender)){
-return sock.sendMessage(from,{text:"Owner only"})
-}
-
-if(p.permission==="admin"){
-
-let admin=await isAdmin(from,sender)
-
-if(!admin){
-return sock.sendMessage(from,{text:"Admin only"})
-}
-
-}
-
-sock.sendMessage(from,{text:p.response})
 
 }
 
