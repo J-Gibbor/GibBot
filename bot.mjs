@@ -1,22 +1,26 @@
-import makeWASocket, {
+import makeWASocket,{
 useMultiFileAuthState,
-downloadContentFromMessage
+downloadContentFromMessage,
+fetchLatestBaileysVersion
 } from "@whiskeysockets/baileys"
 
 import express from "express"
 import P from "pino"
 import QRCode from "qrcode"
+import qrcode from "qrcode-terminal"
 
 const OWNER="2349021540840@s.whatsapp.net"
 const PREFIX="."
-const PASSWORD="RoseBella"
+const PASSWORD="nova123"
 const PORT=process.env.PORT || 3000
 
 let logged=false
 let qrData=null
+let pairingCode=null
 let botStatus="offline"
 
 let admins=[OWNER]
+let groups=[]
 
 let customCommands={}
 
@@ -27,9 +31,9 @@ autoreply:true
 
 const autoReplies={
 hello:["Hello 👋","Hi there 😄","Hey!"],
-hi:["Hello 👋","Hi!","Hey 😄"],
+hi:["Hello 👋","Hi 😄","Hey!"],
 thanks:["You're welcome 😊","No problem 👍"],
-lol:["😂","🤣"],
+lol:["😂","🤣","Lmao"],
 good:["Nice 👍","Great!"],
 morning:["Good morning ☀️"],
 night:["Good night 🌙"],
@@ -41,12 +45,12 @@ const app=express()
 app.use(express.json())
 app.use(express.urlencoded({extended:true}))
 
-// LOGIN PAGE
+// DASHBOARD
 app.get("/",(req,res)=>{
 
 if(!logged){
 return res.send(`
-<h2>Gibborlee Bot Login</h2>
+<h2>Nova Bot Login</h2>
 <form method="POST" action="/login">
 <input type="password" name="password"/>
 <button>Login</button>
@@ -62,16 +66,28 @@ res.send(`
 <h3>QR Login</h3>
 <img src="${qrData||""}" width="300"/>
 
+<h3>Pairing Code</h3>
+${pairingCode||"Not generated"}
+
+<input id="num" placeholder="2349021540840">
+<button onclick="pair()">Generate Pair Code</button>
+
 <hr>
 
 <h2>Create Command</h2>
 
-<input id="name" placeholder="command"/>
-<input id="reply" placeholder="reply"/>
+<input id="name" placeholder="command">
+<input id="reply" placeholder="reply">
+
 <button onclick="create()">Create</button>
 
 <h2>Commands</h2>
+
 <div id="cmds"></div>
+
+<h2>Connected Groups</h2>
+
+<pre>${JSON.stringify(groups,null,2)}</pre>
 
 <script>
 
@@ -123,13 +139,26 @@ load()
 
 }
 
+async function pair(){
+
+let number=document.getElementById("num").value
+
+await fetch("/pair",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({number})
+})
+
+alert("Pair code generated in dashboard")
+
+}
+
 load()
 
 </script>
 `)
 })
 
-// LOGIN
 app.post("/login",(req,res)=>{
 
 if(req.body.password===PASSWORD){
@@ -141,16 +170,13 @@ res.send("Wrong password")
 
 })
 
-// COMMAND LIST
 app.get("/commands",(req,res)=>{
 
 if(!logged) return res.json({})
-
 res.json(customCommands)
 
 })
 
-// CREATE COMMAND
 app.post("/create",(req,res)=>{
 
 let {name,reply}=req.body
@@ -167,7 +193,6 @@ res.json({status:"ok"})
 
 })
 
-// DELETE COMMAND
 app.post("/delete",(req,res)=>{
 
 delete customCommands[req.body.name]
@@ -176,21 +201,34 @@ res.json({status:"deleted"})
 
 })
 
-app.listen(PORT,()=>{
+app.post("/pair",(req,res)=>{
 
-console.log("Dashboard running")
+requestPair(req.body.number)
+
+res.json({status:"pair requested"})
 
 })
 
+app.listen(PORT,()=>{
+console.log("Dashboard running on port",PORT)
+})
+
 // BOT
+let sock
+
 async function start(){
 
 const {state,saveCreds}=
 await useMultiFileAuthState("session")
 
-const sock=makeWASocket({
+const {version}=
+await fetchLatestBaileysVersion()
+
+sock=makeWASocket({
+version,
 logger:P({level:"silent"}),
-auth:state
+auth:state,
+printQRInTerminal:false
 })
 
 sock.ev.on("creds.update",saveCreds)
@@ -200,16 +238,30 @@ sock.ev.on("connection.update",async(update)=>{
 const {connection,qr}=update
 
 if(qr){
+
+qrcode.generate(qr,{small:true})
+
 qrData=await QRCode.toDataURL(qr)
+
+console.log("Scan QR")
+
 }
 
 if(connection==="open"){
+
 botStatus="online"
+
 console.log("Bot connected")
+
+let g=await sock.groupFetchAllParticipating()
+
+groups=Object.values(g).map(x=>x.subject)
+
 }
 
 })
 
+// MESSAGES
 sock.ev.on("messages.upsert",async({messages})=>{
 
 let m=messages[0]
@@ -220,8 +272,8 @@ let from=m.key.remoteJid
 let sender=m.key.participant||from
 
 let text=
-m.message.conversation ||
-m.message.extendedTextMessage?.text ||
+m.message.conversation||
+m.message.extendedTextMessage?.text||
 ""
 
 let command=
@@ -236,10 +288,9 @@ let t=text.toLowerCase()
 
 if(autoReplies[t]){
 
-let replies=autoReplies[t]
+let arr=autoReplies[t]
 
-let reply=
-replies[Math.floor(Math.random()*replies.length)]
+let reply=arr[Math.floor(Math.random()*arr.length)]
 
 await sock.sendMessage(from,{text:reply})
 
@@ -251,23 +302,16 @@ await sock.sendMessage(from,{text:reply})
 if(settings.antilink && text.includes("chat.whatsapp.com")){
 
 await sock.sendMessage(from,{
-text:"Links not allowed 🚫"
+text:"Group links are not allowed 🚫"
 })
 
 }
 
-// CUSTOM COMMANDS
+// CUSTOM COMMAND
 if(customCommands[command]){
 
-let cmd=customCommands[command]
-
-if(!cmd.enabled) return
-
-if(cmd.adminOnly && !admins.includes(sender))
-return
-
 await sock.sendMessage(from,{
-text:cmd.reply
+text:customCommands[command].reply
 })
 
 return
@@ -292,14 +336,10 @@ Gibborlee BOT
 
 // PING
 if(command==="ping"){
-
-await sock.sendMessage(from,{
-text:"Pong 🏓"
-})
-
+await sock.sendMessage(from,{text:"Pong 🏓"})
 }
 
-// VIEW ONCE SAVER
+// VIEW ONCE
 if(command==="vv"){
 
 let quoted=
@@ -328,7 +368,7 @@ await sock.sendMessage(from,{
 
 }
 
-// SAVE PROFILE PIC
+// PROFILE PIC
 if(command==="savepp"){
 
 let url=
@@ -342,6 +382,25 @@ caption:"Profile picture"
 }
 
 })
+
+}
+
+// PAIRING CODE
+async function requestPair(number){
+
+try{
+
+let code=await sock.requestPairingCode(number)
+
+pairingCode=code
+
+console.log("Pairing code:",code)
+
+}catch(err){
+
+console.log(err)
+
+}
 
 }
 
