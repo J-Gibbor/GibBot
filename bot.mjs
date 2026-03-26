@@ -1,13 +1,15 @@
 import makeWASocket,{
 useMultiFileAuthState,
+fetchLatestBaileysVersion,
 downloadContentFromMessage,
-fetchLatestBaileysVersion
+DisconnectReason
 } from "@whiskeysockets/baileys"
 
 import express from "express"
 import P from "pino"
 import QRCode from "qrcode"
 import qrcode from "qrcode-terminal"
+import fs from "fs"
 
 const OWNER="2349021540840@s.whatsapp.net"
 const PREFIX="."
@@ -19,15 +21,9 @@ let qrData=null
 let pairingCode=null
 let botStatus="offline"
 
-let admins=[OWNER]
+let sock=null
 let groups=[]
-
 let customCommands={}
-
-let settings={
-antilink:true,
-autoreply:true
-}
 
 const autoReplies={
 hello:["Hello 👋","Hi there 😄","Hey!"],
@@ -59,7 +55,7 @@ return res.send(`
 }
 
 res.send(`
-<h1>Gibborlee Bot Dashboard</h1>
+<h1>Nova Ultra Bot Dashboard</h1>
 
 <p>Status: ${botStatus}</p>
 
@@ -69,7 +65,7 @@ res.send(`
 <h3>Pairing Code</h3>
 ${pairingCode||"Not generated"}
 
-<input id="num" placeholder="2349021540840">
+<input id="num" placeholder="234xxxxxxxxxx">
 <button onclick="pair()">Generate Pair Code</button>
 
 <hr>
@@ -149,7 +145,7 @@ headers:{"Content-Type":"application/json"},
 body:JSON.stringify({number})
 })
 
-alert("Pair code generated in dashboard")
+alert("Pair code generated")
 
 }
 
@@ -171,23 +167,15 @@ res.send("Wrong password")
 })
 
 app.get("/commands",(req,res)=>{
-
-if(!logged) return res.json({})
 res.json(customCommands)
-
 })
 
 app.post("/create",(req,res)=>{
 
 let {name,reply}=req.body
-
 name=name.toLowerCase()
 
-customCommands[name]={
-reply,
-enabled:true,
-adminOnly:false
-}
+customCommands[name]={reply}
 
 res.json({status:"ok"})
 
@@ -213,21 +201,16 @@ app.listen(PORT,()=>{
 console.log("Dashboard running on port",PORT)
 })
 
-// BOT
-let sock
+// BOT START
+async function startBot(){
 
-async function start(){
-
-const {state,saveCreds}=
-await useMultiFileAuthState("session")
-
-const {version}=
-await fetchLatestBaileysVersion()
+const {state,saveCreds}=await useMultiFileAuthState("session")
+const {version}=await fetchLatestBaileysVersion()
 
 sock=makeWASocket({
 version,
-logger:P({level:"silent"}),
 auth:state,
+logger:P({level:"silent"}),
 printQRInTerminal:false
 })
 
@@ -235,15 +218,14 @@ sock.ev.on("creds.update",saveCreds)
 
 sock.ev.on("connection.update",async(update)=>{
 
-const {connection,qr}=update
+const {connection,qr,lastDisconnect}=update
 
 if(qr){
 
 qrcode.generate(qr,{small:true})
-
 qrData=await QRCode.toDataURL(qr)
 
-console.log("Scan QR")
+console.log("Scan QR to login")
 
 }
 
@@ -254,18 +236,35 @@ botStatus="online"
 console.log("Bot connected")
 
 let g=await sock.groupFetchAllParticipating()
-
 groups=Object.values(g).map(x=>x.subject)
+
+}
+
+if(connection==="close"){
+
+botStatus="offline"
+
+let reason=lastDisconnect?.error?.output?.statusCode
+
+if(reason!==DisconnectReason.loggedOut){
+
+console.log("Reconnecting...")
+startBot()
+
+}else{
+
+console.log("Session logged out. Delete session folder.")
+
+}
 
 }
 
 })
 
-// MESSAGES
+// MESSAGE HANDLER
 sock.ev.on("messages.upsert",async({messages})=>{
 
 let m=messages[0]
-
 if(!m.message) return
 
 let from=m.key.remoteJid
@@ -282,27 +281,22 @@ text.startsWith(PREFIX)
 :null
 
 // AUTO REPLY
-if(settings.autoreply){
-
 let t=text.toLowerCase()
 
 if(autoReplies[t]){
 
 let arr=autoReplies[t]
-
 let reply=arr[Math.floor(Math.random()*arr.length)]
 
 await sock.sendMessage(from,{text:reply})
 
 }
 
-}
-
 // ANTI LINK
-if(settings.antilink && text.includes("chat.whatsapp.com")){
+if(text.includes("chat.whatsapp.com")){
 
 await sock.sendMessage(from,{
-text:"Group links are not allowed 🚫"
+text:"Group links not allowed 🚫"
 })
 
 }
@@ -322,14 +316,7 @@ return
 if(command==="menu"){
 
 await sock.sendMessage(from,{
-text:`
-Gibborlee BOT
-
-.menu
-.ping
-.vv
-.savepp
-`
+text:"Commands:\n.menu\n.ping\n.vv\n.savepp"
 })
 
 }
@@ -343,15 +330,13 @@ await sock.sendMessage(from,{text:"Pong 🏓"})
 if(command==="vv"){
 
 let quoted=
-m.message?.extendedTextMessage?.contextInfo
-?.quotedMessage
+m.message?.extendedTextMessage?.contextInfo?.quotedMessage
 
 if(!quoted) return
 
 let type=Object.keys(quoted)[0]
 
-let stream=
-await downloadContentFromMessage(
+let stream=await downloadContentFromMessage(
 quoted[type],
 type==="imageMessage"?"image":"video"
 )
@@ -371,8 +356,7 @@ await sock.sendMessage(from,{
 // PROFILE PIC
 if(command==="savepp"){
 
-let url=
-await sock.profilePictureUrl(sender,"image")
+let url=await sock.profilePictureUrl(sender,"image")
 
 await sock.sendMessage(from,{
 image:{url},
@@ -398,10 +382,10 @@ console.log("Pairing code:",code)
 
 }catch(err){
 
-console.log(err)
+console.log("Pairing error",err)
 
 }
 
 }
 
-start()
+startBot()
