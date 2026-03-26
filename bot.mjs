@@ -4,13 +4,19 @@ useMultiFileAuthState
 
 import express from "express"
 import fs from "fs"
+import http from "http"
+import { Server } from "socket.io"
 import QRCode from "qrcode"
 import pino from "pino"
 
 const app = express()
+const server = http.createServer(app)
+const io = new Server(server)
 
 app.use(express.json())
 app.use(express.static("dashboard"))
+
+let sock
 
 let currentQR = null
 
@@ -35,31 +41,43 @@ return false
 
 async function startBot(){
 
-const {state,saveCreds} = await useMultiFileAuthState("auth")
+const { state, saveCreds } = await useMultiFileAuthState("./auth")
 
-const sock = makeWASocket({
-auth:state,
-logger:pino({level:"silent"})
+sock = makeWASocket({
+auth: state,
+logger: pino({ level:"silent" })
 })
 
-sock.ev.on("creds.update",saveCreds)
+sock.ev.on("creds.update", saveCreds)
 
-sock.ev.on("connection.update",async(update)=>{
+sock.ev.on("connection.update", async (update)=>{
 
-const {connection,qr} = update
+const { connection, qr } = update
 
 if(qr){
-currentQR = await QRCode.toDataURL(qr)
+
+const qrImage = await QRCode.toDataURL(qr)
+
+io.emit("qr", qrImage)
+
 }
 
-if(connection==="close"){
-startBot()
-}
+if(connection === "open"){
 
-if(connection==="open"){
 console.log("BOT CONNECTED")
+
+io.emit("connected")
+
 }
+
+if(connection === "close"){
+
+startBot()
+
+}
+
 })
+
 
 sock.ev.on("messages.upsert", async ({messages})=>{
 
@@ -214,8 +232,8 @@ saveDB(db)
 res.json({status:"granted"})
 })
 
-app.listen(3000,()=>{
-console.log("Dashboard running on port 3000")
-})
-
 startBot()
+
+server.listen(3000,()=>{
+console.log("Dashboard running on http://localhost:3000")
+})
