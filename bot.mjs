@@ -1,135 +1,221 @@
-// all-in-one WhatsApp bot compiled
-// Features:
-// 1. Owner: +2349021540840
-// 2. Command permissions system
-// 3. DM menu and group menu
-// 4. Auto-replies with multiple random responses
-// 5. Welcome/Goodbye messages (editable, toggleable, beautified)
-// 6. Sticker converter
-// 7. View-once media saver
-// 8. Profile picture saver
-// 9. Moderation: warn, ban, mute
-// 10. Anti-links system
-// 11. React-style dashboard integration
-// 12. Live QR login + connection status indicator
+import makeWASocket, {
+useMultiFileAuthState
+} from "@whiskeysockets/baileys"
 
-import { default as makeWASocket, useMultiFileAuthState, DisconnectReason, downloadContentFromMessage, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
-import express from 'express';
-import fs from 'fs';
-import path from 'path';
+import express from "express"
+import fs from "fs"
+import QRCode from "qrcode"
+import pino from "pino"
 
-// ===== SETTINGS =====
-const settingsFile = './settings.json';
-let settings = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile)) : {
-  permittedUsers: {},
-  autoReply: { enabled: true, keywords: {} },
-  groups: {},
-  admins: [],
-};
+const app = express()
 
-// ===== OWNER =====
-const OWNER = '2349021540840@s.whatsapp.net';
-if(!settings.admins.includes(OWNER)) settings.admins.push(OWNER);
-fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+app.use(express.json())
+app.use(express.static("dashboard"))
 
-// ===== EXPRESS DASHBOARD =====
-const app = express();
-app.use(express.json());
-app.use(express.static(path.join(process.cwd(), 'dashboard')));
-app.get('/api/settings', (req,res)=>{ res.json(settings); });
-app.post('/api/settings', (req,res)=>{
-  settings = { ...settings, ...req.body };
-  fs.writeFileSync(settingsFile, JSON.stringify(settings,null,2));
-  res.json({ success: true });
-});
-app.listen(3000,()=>console.log('Dashboard running at http://localhost:3000'));
+let currentQR = null
 
-// ===== BAILEYS SOCKET =====
-async function startBot(){
-  const { state, saveCreds } = await useMultiFileAuthState('auth_info');
-  const { version, isLatest } = await fetchLatestBaileysVersion();
-  const sock = makeWASocket({ auth: state, version });
-
-  sock.ev.on('creds.update', saveCreds);
-  sock.ev.on('connection.update', update=>{
-    if(update.qr){ console.log('Scan QR:', update.qr); }
-    if(update.connection==='open'){ console.log('Bot connected'); }
-    if(update.lastDisconnect?.error){ console.log('Disconnected:', update.lastDisconnect.error); }
-  });
-
-  // ===== MESSAGE HANDLER =====
-  sock.ev.on('messages.upsert', async m => {
-    const msg = m.messages[0];
-    if(!msg.message || msg.key.fromMe) return;
-    const sender = msg.key.participant || msg.key.remoteJid;
-    const isGroup = msg.key.remoteJid.endsWith('@g.us');
-    const isPrivate = !isGroup;
-    const messageType = Object.keys(msg.message)[0];
-    const msgText = messageType==='conversation' ? msg.message.conversation : '';
-
-    // ===== COMMANDS PERMISSIONS =====
-    const command = msgText.split(' ')[0].toLowerCase();
-    const userPerms = settings.permittedUsers[sender] || [];
-    if(sender !== OWNER && !settings.admins.includes(sender) && !userPerms.includes(command)){
-      await sock.sendMessage(sender, { text: '❌ You do not have permission to use this command.' });
-      return;
-    }
-
-    // ===== AUTO-REPLIES =====
-    if(settings.autoReply.enabled){
-      for(const keyword in settings.autoReply.keywords){
-        if(msgText.toLowerCase().includes(keyword)){
-          const replies = settings.autoReply.keywords[keyword];
-          const reply = replies[Math.floor(Math.random()*replies.length)];
-          await sock.sendMessage(sender,{ text: reply });
-          break;
-        }
-      }
-    }
-
-    // ===== DM MENU =====
-    if(msgText.toLowerCase() === '!dmmenu' && isPrivate){
-      let message = '*📜 Bot Command Menu 📜*\n\n';
-      message += '🔹 *Fun Commands:*\n- !sticker → Convert media to sticker\n- !joke → Random joke\n\n';
-      message += '🔹 *Tools:*\n- !saveprofile → Save profile pictures\n- !vv → Save view-once media\n\n';
-      message += '🔹 *Moderation:*\n- !warn → Issue warning\n- !ban → Ban user (owner only)\n\n';
-      message += '🔹 *Other Commands:*\n- !dmmenu → Show this menu\n- !menu → Group menu\n\n';
-      message += '⚠️ Only permitted commands are shown.';
-      await sock.sendMessage(sender, { text: message });
-    }
-
-    // ===== STICKER CONVERTER =====
-    if(command==='!sticker' && ['imageMessage','videoMessage'].includes(messageType)){
-      const buffer = await downloadContentFromMessage(msg.message[messageType],'buffer');
-      await sock.sendMessage(sender,{ sticker: buffer });
-    }
-
-    // ===== VIEW-ONCE SAVER =====
-    if(command==='!vv'){
-      const type = Object.keys(msg.message)[0];
-      const buffer = await downloadContentFromMessage(msg.message[type],'buffer');
-      await sock.sendMessage(sender,{ document: buffer, fileName: 'viewonce_saved', mimetype: 'application/octet-stream' });
-    }
-
-    // ===== WELCOME / GOODBYE HANDLER =====
-    sock.ev.on('group-participants.update', async update=>{
-      const groupId = update.id;
-      const groupSettings = settings.groups[groupId] || {};
-      for(const p of update.participants){
-        const userMention = p;
-        const groupName = (await sock.groupMetadata(groupId)).subject;
-        if(update.action==='add' && groupSettings.welcome?.enabled){
-          let msg = groupSettings.welcome.message.replace('@user', `@${userMention.split('@')[0]}`).replace('@group', groupName);
-          await sock.sendMessage(groupId,{ text: msg, mentions:[userMention] });
-        }
-        if(update.action==='remove' && groupSettings.goodbye?.enabled){
-          let msg = groupSettings.goodbye.message.replace('@user', `@${userMention.split('@')[0]}`).replace('@group', groupName);
-          await sock.sendMessage(groupId,{ text: msg, mentions:[userMention] });
-        }
-      }
-    });
-
-  });
+function loadDB(){
+return JSON.parse(fs.readFileSync("./database.json"))
 }
 
-startBot();
+function saveDB(db){
+fs.writeFileSync("./database.json",JSON.stringify(db,null,2))
+}
+
+function isAllowed(user,command,db){
+
+if(db.owners.includes(user)) return true
+
+if(db.permissions[command]){
+return db.permissions[command].includes(user)
+}
+
+return false
+}
+
+async function startBot(){
+
+const {state,saveCreds} = await useMultiFileAuthState("auth")
+
+const sock = makeWASocket({
+auth:state,
+logger:pino({level:"silent"})
+})
+
+sock.ev.on("creds.update",saveCreds)
+
+sock.ev.on("connection.update",async(update)=>{
+
+const {connection,qr} = update
+
+if(qr){
+currentQR = await QRCode.toDataURL(qr)
+}
+
+if(connection==="close"){
+startBot()
+}
+
+if(connection==="open"){
+console.log("BOT CONNECTED")
+}
+})
+
+sock.ev.on("messages.upsert", async ({messages})=>{
+
+let m = messages[0]
+if(!m.message) return
+
+let sender = m.key.remoteJid
+let senderUser = m.key.participant || sender
+
+let text =
+m.message.conversation ||
+m.message.extendedTextMessage?.text ||
+""
+
+text = text.toLowerCase()
+
+let db = loadDB()
+
+if(!text.startsWith("!")) return
+
+let cmd = text.split(" ")[0]
+
+/* WARN */
+
+if(cmd==="!warn"){
+
+if(!isAllowed(senderUser,"warn",db)) return
+
+let target = m.message.extendedTextMessage.contextInfo.participant
+
+db.warnings[target] = (db.warnings[target] || 0)+1
+
+await sock.sendMessage(sender,{
+text:`⚠ Warning ${db.warnings[target]}/3`
+})
+
+if(db.warnings[target] >=3){
+await sock.sendMessage(sender,{text:"User auto banned"})
+}
+
+saveDB(db)
+}
+
+/* VIEW ONCE */
+
+if(cmd==="!vv"){
+
+let quoted = m.message.extendedTextMessage?.contextInfo?.quotedMessage
+
+if(!quoted) return
+
+let buffer = await sock.downloadMediaMessage({
+message: quoted
+})
+
+await sock.sendMessage(sender,{
+image:buffer,
+caption:"View Once Saved"
+})
+}
+
+/* PROFILE PIC */
+
+if(cmd==="!pp"){
+
+let target =
+m.message.extendedTextMessage?.contextInfo?.participant ||
+senderUser
+
+try{
+
+let url = await sock.profilePictureUrl(target,"image")
+
+await sock.sendMessage(sender,{
+image:{url:url}
+})
+
+}catch{
+sock.sendMessage(sender,{text:"No profile photo"})
+}
+}
+
+/* STICKER */
+
+if(cmd==="!sticker" || cmd==="!s"){
+
+let quoted = m.message.extendedTextMessage?.contextInfo?.quotedMessage
+
+if(!quoted) return
+
+let buffer = await sock.downloadMediaMessage({
+message:quoted
+})
+
+await sock.sendMessage(sender,{
+sticker:buffer
+})
+}
+
+})
+
+}
+
+/* DASHBOARD API */
+
+/* LOGIN */
+
+app.post("/login",(req,res)=>{
+
+let db = loadDB()
+
+if(req.body.password === db.dashboard.password){
+
+return res.json({success:true})
+
+}else{
+
+return res.json({success:false})
+}
+
+})
+
+/* GET QR */
+
+app.get("/qr",(req,res)=>{
+
+if(!currentQR){
+return res.send("QR not ready")
+}
+
+res.send(`<img src="${currentQR}"/>`)
+})
+
+/* PERMISSIONS */
+
+app.post("/allow",(req,res)=>{
+
+let db = loadDB()
+
+let {number,command} = req.body
+
+number = number+"@s.whatsapp.net"
+
+if(!db.permissions[command]){
+db.permissions[command] = []
+}
+
+db.permissions[command].push(number)
+
+saveDB(db)
+
+res.json({status:"granted"})
+})
+
+app.listen(3000,()=>{
+console.log("Dashboard running on port 3000")
+})
+
+startBot()

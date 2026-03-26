@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Bot Dashboard</title>
+</head>
+
+<body>
+
+<h2>Login</h2>
+
+<input id="pass" type="password">
+<button onclick="login()">Login</button>
+
+<div id="panel" style="display:none">
+
+<h2>QR Login</h2>
+
+<img id="qr" width="250">
+
+<h2>Grant Command Permission</h2>
+
+<input id="num" placeholder="number">
+<input id="cmd" placeholder="command">
+
+<button onclick="allow()">Grant</button>
+
+</div>
+
+<script>
+
+function login(){
+
+fetch("/login",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({password:pass.value})
+})
+.then(r=>r.json())
+.then(d=>{
+
+if(d.success){
+
+panel.style.display="block"
+loadQR()
+
+}
+})
+
+}
+
+function loadQR(){
+qr.src="/qr"
+}
+
+function allow(){
+
+fetch("/allow",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({
+number:num.value,
+command:cmd.value
+})
+})
+
+}
+
+</script>
+
+</body>
+</html>
