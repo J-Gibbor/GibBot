@@ -6,55 +6,190 @@ downloadContentFromMessage
 } from "@whiskeysockets/baileys"
 
 import express from "express"
+import fs from "fs"
 import P from "pino"
 import qrcode from "qrcode-terminal"
-import QRCode from "qrcode"
 
-////////////////////////////////////////////////////
-
+const BOT_NAME="GibborLee Bot"
 const PREFIX="."
 const DASH_PASSWORD="RoseBella"
-const PORT=process.env.PORT||3000
-
-////////////////////////////////////////////////////
-
-let owners=["2349021540840@s.whatsapp.net"]
-let blockedUsers=[]
-let customCommands={}
-
-let settings={
-antilink:false,
-welcome:false,
-goodbye:false,
-autoreply:true,
-autolock:false
-}
-
-let botSettings={
-mode:"public",
-warnLimit:3
-}
-
-let warnings={}
-let stats={messages:0,commands:0}
-
-let qrImage=null
-let pairingCode=null
-let botStatus="offline"
+const PORT=process.env.PORT || 3000
 
 let sock
 
 ////////////////////////////////////////////////////
-//////////////// HELPER FUNCTIONS //////////////////
+//////////////// DATABASE //////////////////////////
 ////////////////////////////////////////////////////
 
-function isOwner(user){
-return owners.includes(user)
+const DB_FILE="./database.json"
+
+let db={
+owners:["2349021540840@s.whatsapp.net"],
+plugins:{},
+warnings:{},
+settings:{
+antilink:true,
+welcome:true,
+goodbye:true,
+autoreply:true
+},
+analytics:{groups:{}}
+}
+
+if(fs.existsSync(DB_FILE)){
+db=JSON.parse(fs.readFileSync(DB_FILE))
+}
+
+function saveDB(){
+fs.writeFileSync(DB_FILE,JSON.stringify(db,null,2))
+}
+
+////////////////////////////////////////////////////
+//////////////// EXPRESS DASHBOARD //////////////////
+////////////////////////////////////////////////////
+
+const app=express()
+app.use(express.json())
+
+let logged=false
+
+app.get("/",(req,res)=>{
+
+if(!logged){
+return res.send(`
+<h2>${BOT_NAME} Login</h2>
+<form method="POST" action="/login">
+<input type="password" name="password"/>
+<button>Login</button>
+</form>
+`)
+}
+
+res.send(`
+<h1>🤖 ${BOT_NAME} Dashboard</h1>
+
+<h3>Plugins</h3>
+<div id="plugins"></div>
+
+<input id="cmd">
+<input id="reply">
+
+<select id="perm">
+<option value="user">User</option>
+<option value="admin">Admin</option>
+<option value="owner">Owner</option>
+</select>
+
+<button onclick="add()">Add Plugin</button>
+
+<script>
+
+async function load(){
+
+let data=await fetch("/plugins").then(r=>r.json())
+
+let html=""
+
+for(let p in data){
+
+html+=\`
+<div>
+.\${p} - \${data[p].permission}
+<button onclick="del('\${p}')">Delete</button>
+</div>
+\`
+
+}
+
+document.getElementById("plugins").innerHTML=html
+
+}
+
+async function add(){
+
+let name=document.getElementById("cmd").value
+let response=document.getElementById("reply").value
+let permission=document.getElementById("perm").value
+
+await fetch("/install-plugin",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({name,response,permission})
+})
+
+load()
+
+}
+
+async function del(name){
+
+await fetch("/delete-plugin",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({name})
+})
+
+load()
+
+}
+
+setInterval(load,3000)
+
+</script>
+`)
+})
+
+app.post("/login",(req,res)=>{
+
+if(req.body.password===DASH_PASSWORD){
+logged=true
+res.redirect("/")
+}else{
+res.send("Wrong password")
+}
+
+})
+
+app.get("/plugins",(req,res)=>res.json(db.plugins))
+
+app.post("/install-plugin",(req,res)=>{
+
+let {name,response,permission}=req.body
+
+db.plugins[name]={
+response,
+permission,
+enabled:true
+}
+
+saveDB()
+
+res.json({ok:true})
+
+})
+
+app.post("/delete-plugin",(req,res)=>{
+
+delete db.plugins[req.body.name]
+
+saveDB()
+
+res.json({ok:true})
+
+})
+
+app.listen(PORT,()=>console.log("Dashboard running"))
+
+////////////////////////////////////////////////////
+//////////////// WHATSAPP BOT //////////////////////
+////////////////////////////////////////////////////
+
+function isOwner(id){
+return db.owners.includes(id)
 }
 
 async function isAdmin(group,user){
 
-try{
 let meta=await sock.groupMetadata(group)
 
 let admins=meta.participants
@@ -63,243 +198,54 @@ let admins=meta.participants
 
 return admins.includes(user)
 
-}catch{
-return false
-}
-
 }
 
 ////////////////////////////////////////////////////
-//////////////// WEB DASHBOARD /////////////////////
+//////////////// AUTO REPLIES //////////////////////
 ////////////////////////////////////////////////////
 
-const app=express()
-app.use(express.json())
-app.use(express.urlencoded({extended:true}))
-
-let logged=false
-
-app.get("/",(req,res)=>{
-
-if(!logged){
-
-return res.send(`
-<h2>Gibborlee Bot Dashboard Login</h2>
-<form method="POST" action="/login">
-<input type="password" name="password">
-<button>Login</button>
-</form>
-`)
-
+const autoReplies={
+hello:["Hello 👋","Hi there!","Hey!","Greetings 😊"],
+hi:["Hi 👋","Hello!","Hey there!"],
+bot:["Yes I'm here 🤖","Bot active","Ready!"],
+thanks:["You're welcome","No problem","Glad to help"],
+bye:["Goodbye 👋","See you later","Take care"]
 }
 
-res.send(`
-<h1>🌌 Gibborlee Bot Dashboard</h1>
-
-<p>Status: ${botStatus}</p>
-
-<img src="${qrImage||""}" width="250"/>
-
-<h3>Pairing Code: ${pairingCode||"None"}</h3>
-
-<hr>
-
-<h2>Bot Mode</h2>
-<button onclick="toggleMode()">Toggle Mode</button>
-
-<h2>Warn Limit</h2>
-<input id="limit">
-<button onclick="setLimit()">Update</button>
-
-<h2>AntiLink</h2>
-<button onclick="toggleAnti()">Toggle</button>
-
-<hr>
-
-<h2>Owner Manager</h2>
-
-<input id="own">
-<button onclick="addOwner()">Add</button>
-<button onclick="removeOwner()">Remove</button>
-
-<div id="owners"></div>
-
-<hr>
-
-<h2>Create Command</h2>
-
-<input id="cmd" placeholder="command name">
-<input id="reply" placeholder="reply text">
-<button onclick="createCmd()">Create</button>
-
-<hr>
-
-<h2>Block User</h2>
-
-<input id="user">
-<button onclick="block()">Block</button>
-
-<script>
-
-async function toggleMode(){
-await fetch("/toggle-mode",{method:"POST"})
+function random(arr){
+return arr[Math.floor(Math.random()*arr.length)]
 }
-
-async function toggleAnti(){
-await fetch("/toggle-antilink",{method:"POST"})
-}
-
-async function setLimit(){
-
-let l=document.getElementById("limit").value
-
-await fetch("/warnlimit",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({limit:l})
-})
-
-}
-
-async function addOwner(){
-
-let n=document.getElementById("own").value
-
-await fetch("/add-owner",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({number:n})
-})
-
-}
-
-async function removeOwner(){
-
-let n=document.getElementById("own").value
-
-await fetch("/remove-owner",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({number:n})
-})
-
-}
-
-async function createCmd(){
-
-let c=document.getElementById("cmd").value
-let r=document.getElementById("reply").value
-
-await fetch("/create-command",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({cmd:c,reply:r})
-})
-
-}
-
-async function block(){
-
-let u=document.getElementById("user").value
-
-await fetch("/block-user",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({user:u})
-})
-
-}
-
-</script>
-`)
-})
-
-app.post("/login",(req,res)=>{
-if(req.body.password===DASH_PASSWORD){
-logged=true
-res.redirect("/")
-}else{
-res.send("Wrong password")
-}
-})
-
-app.post("/toggle-mode",(req,res)=>{
-botSettings.mode=botSettings.mode==="public"?"private":"public"
-res.json(botSettings)
-})
-
-app.post("/toggle-antilink",(req,res)=>{
-settings.antilink=!settings.antilink
-res.json(settings)
-})
-
-app.post("/warnlimit",(req,res)=>{
-botSettings.warnLimit=parseInt(req.body.limit)||3
-res.json(botSettings)
-})
-
-app.post("/add-owner",(req,res)=>{
-let jid=req.body.number+"@s.whatsapp.net"
-if(!owners.includes(jid)) owners.push(jid)
-res.json(owners)
-})
-
-app.post("/remove-owner",(req,res)=>{
-let jid=req.body.number+"@s.whatsapp.net"
-owners=owners.filter(o=>o!==jid)
-res.json(owners)
-})
-
-app.post("/create-command",(req,res)=>{
-customCommands[req.body.cmd]=req.body.reply
-res.json(customCommands)
-})
-
-app.post("/block-user",(req,res)=>{
-let jid=req.body.user+"@s.whatsapp.net"
-blockedUsers.push(jid)
-res.json(blockedUsers)
-})
-
-app.listen(PORT,()=>console.log("Dashboard running"))
 
 ////////////////////////////////////////////////////
-//////////////// WHATSAPP BOT /////////////////////
+//////////////// START BOT /////////////////////////
 ////////////////////////////////////////////////////
 
-async function startBot(){
+async function start(){
 
 const {state,saveCreds}=await useMultiFileAuthState("session")
+
 const {version}=await fetchLatestBaileysVersion()
 
 sock=makeWASocket({
 version,
 auth:state,
-logger:P({level:"silent"}),
-printQRInTerminal:false
+logger:P({level:"silent"})
 })
 
 sock.ev.on("creds.update",saveCreds)
 
-sock.ev.on("connection.update",async(update)=>{
+sock.ev.on("connection.update",(update)=>{
 
-const {connection,qr,lastDisconnect}=update
+let {connection,qr,lastDisconnect}=update
 
 if(qr){
 qrcode.generate(qr,{small:true})
-qrImage=await QRCode.toDataURL(qr)
-}
-
-if(connection==="open"){
-botStatus="online"
 }
 
 if(connection==="close"){
 
-let reason=lastDisconnect?.error?.output?.statusCode
-
-if(reason!==DisconnectReason.loggedOut){
-startBot()
+if(lastDisconnect?.error?.output?.statusCode!==DisconnectReason.loggedOut){
+start()
 }
 
 }
@@ -307,20 +253,51 @@ startBot()
 })
 
 ////////////////////////////////////////////////////
-//////////////// MESSAGE HANDLER //////////////////
+//////////////// GROUP EVENTS //////////////////////
+////////////////////////////////////////////////////
+
+sock.ev.on("group-participants.update",async(data)=>{
+
+let meta=await sock.groupMetadata(data.id)
+
+for(let user of data.participants){
+
+let tag="@"+user.split("@")[0]
+
+if(data.action==="add" && db.settings.welcome){
+
+await sock.sendMessage(data.id,{
+text:`👋 Welcome ${tag} to *${meta.subject}*`,
+mentions:[user]
+})
+
+}
+
+if(data.action==="remove" && db.settings.goodbye){
+
+await sock.sendMessage(data.id,{
+text:`👋 Goodbye ${tag}`,
+mentions:[user]
+})
+
+}
+
+}
+
+})
+
+////////////////////////////////////////////////////
+//////////////// MESSAGE HANDLER ///////////////////
 ////////////////////////////////////////////////////
 
 sock.ev.on("messages.upsert",async({messages})=>{
 
 let m=messages[0]
-if(!m.message) return
 
-stats.messages++
+if(!m.message) return
 
 let from=m.key.remoteJid
 let sender=m.key.participant||from
-
-if(blockedUsers.includes(sender)) return
 
 let text=
 m.message.conversation||
@@ -328,93 +305,65 @@ m.message.extendedTextMessage?.text||
 ""
 
 ////////////////////////////////////////////////////
-//////////////// ANTI LINK WARN ///////////////////
+//// AUTO REPLY
 ////////////////////////////////////////////////////
 
-if(settings.antilink && from.endsWith("@g.us") && text.includes("chat.whatsapp.com")){
+if(db.settings.autoreply){
 
-if(await isAdmin(from,sender)) return
+let lower=text.toLowerCase()
 
-if(!warnings[sender]) warnings[sender]=0
+for(let k in autoReplies){
 
-warnings[sender]++
+if(lower.includes(k)){
 
-let count=warnings[sender]
+sock.sendMessage(from,{text:random(autoReplies[k])})
 
-await sock.sendMessage(from,{
-text:`⚠ Anti-Link Warning ${count}/${botSettings.warnLimit}`,
-mentions:[sender]
-})
-
-if(count>=botSettings.warnLimit){
-
-await sock.groupParticipantsUpdate(from,[sender],"remove")
-
-warnings[sender]=0
+}
 
 }
 
 }
 
 ////////////////////////////////////////////////////
-//////////////// COMMAND HANDLER //////////////////
+//// COMMANDS
 ////////////////////////////////////////////////////
 
 if(!text.startsWith(PREFIX)) return
 
-let command=text.slice(1).split(" ")[0].toLowerCase()
-
-stats.commands++
+let command=text.slice(1).split(" ")[0]
 
 ////////////////////////////////////////////////////
-//////////////// CUSTOM COMMANDS //////////////////
+//// MENU
 ////////////////////////////////////////////////////
 
-if(customCommands[command]){
+if(command==="menu"){
 
-return sock.sendMessage(from,{
-text:customCommands[command]
+sock.sendMessage(from,{
+text:`
+🤖 *${BOT_NAME}*
+
+📌 General
+.menu
+.ping
+
+👁 Media
+.vv
+.savepp
+.status
+
+🛡 Admin
+.warn
+.antilink
+
+⚙ Plugins
+Install commands from dashboard
+`
 })
 
 }
 
 ////////////////////////////////////////////////////
-//////////////// MENU /////////////////////////////
-////////////////////////////////////////////////////
-
-if(command==="menu"){
-
-let menu=`
-🌌 Gibborlee BOT
-
-👑 Owner: 2349021540840
-⚡ Status: ${botStatus}
-📌 Mode: ${botSettings.mode}
-
-📊 Stats
-Messages: ${stats.messages}
-Commands: ${stats.commands}
-
-📋 General
-.menu
-.ping
-
-👑 Owner Commands
-.vv
-.savepp
-
-🛡 Admin
-.warn
-.hidetags
-.antilink
-`
-
-await sock.sendMessage(from,{text:menu})
-
-}
-
-////////////////////////////////////////////////////
-//////////////// PING /////////////////////////////
+//// PING
 ////////////////////////////////////////////////////
 
 if(command==="ping"){
@@ -422,62 +371,23 @@ sock.sendMessage(from,{text:"🏓 Pong"})
 }
 
 ////////////////////////////////////////////////////
-//////////////// WARN /////////////////////////////
-////////////////////////////////////////////////////
-
-if(command==="warn"){
-
-if(!await isAdmin(from,sender)) return
-
-let target=m.message.extendedTextMessage
-?.contextInfo?.mentionedJid?.[0]
-
-if(!warnings[target]) warnings[target]=0
-
-warnings[target]++
-
-sock.sendMessage(from,{
-text:`⚠ Warn ${warnings[target]}/${botSettings.warnLimit}`
-})
-
-}
-
-////////////////////////////////////////////////////
-//////////////// HIDETAGS /////////////////////////
-////////////////////////////////////////////////////
-
-if(command==="hidetags"){
-
-if(!await isAdmin(from,sender)) return
-
-let meta=await sock.groupMetadata(from)
-let members=meta.participants.map(p=>p.id)
-
-let msg=text.replace(".hidetags","")
-
-sock.sendMessage(from,{
-text:msg,
-mentions:members
-})
-
-}
-
-////////////////////////////////////////////////////
-//////////////// OWNER COMMANDS ///////////////////
+//// VIEW ONCE
 ////////////////////////////////////////////////////
 
 if(command==="vv"){
 
-if(!isOwner(sender)) return
-
-let quoted=m.message.extendedTextMessage?.contextInfo?.quotedMessage
+let quoted=m.message?.extendedTextMessage?.contextInfo?.quotedMessage
 
 if(!quoted) return
 
-let type=Object.keys(quoted)[0]
+let viewOnce=quoted.viewOnceMessage?.message
+
+if(!viewOnce) return
+
+let type=Object.keys(viewOnce)[0]
 
 let stream=await downloadContentFromMessage(
-quoted[type],
+viewOnce[type],
 type.replace("Message","")
 )
 
@@ -493,24 +403,54 @@ await sock.sendMessage(from,{
 
 }
 
-if(command==="savepp"){
+////////////////////////////////////////////////////
+//// SAVE PROFILE PIC
+////////////////////////////////////////////////////
 
-if(!isOwner(sender)) return
+if(command==="savepp"){
 
 let user=
 m.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0]||sender
 
 let url=await sock.profilePictureUrl(user,"image")
 
-await sock.sendMessage(from,{
+sock.sendMessage(from,{
 image:{url},
 caption:"Profile picture"
 })
 
 }
 
+////////////////////////////////////////////////////
+//// PLUGIN COMMANDS
+////////////////////////////////////////////////////
+
+if(db.plugins[command]){
+
+let p=db.plugins[command]
+
+if(!p.enabled) return
+
+if(p.permission==="owner" && !isOwner(sender)){
+return sock.sendMessage(from,{text:"Owner only"})
+}
+
+if(p.permission==="admin"){
+
+let admin=await isAdmin(from,sender)
+
+if(!admin){
+return sock.sendMessage(from,{text:"Admin only"})
+}
+
+}
+
+sock.sendMessage(from,{text:p.response})
+
+}
+
 })
 
 }
 
-startBot()
+start()
