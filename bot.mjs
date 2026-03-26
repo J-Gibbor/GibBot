@@ -1,207 +1,272 @@
 import makeWASocket,{
 useMultiFileAuthState,
 fetchLatestBaileysVersion,
-downloadContentFromMessage,
-DisconnectReason
+DisconnectReason,
+downloadContentFromMessage
 } from "@whiskeysockets/baileys"
 
 import express from "express"
 import P from "pino"
-import QRCode from "qrcode"
 import qrcode from "qrcode-terminal"
-import fs from "fs"
+import QRCode from "qrcode"
 
-const OWNER="2349021540840@s.whatsapp.net"
+////////////////////////////////////////////////////
+
 const PREFIX="."
-const PASSWORD="nova123"
-const PORT=process.env.PORT || 3000
+const DASH_PASSWORD="RoseBella"
+const PORT=process.env.PORT||3000
 
-let logged=false
-let qrData=null
+////////////////////////////////////////////////////
+
+let owners=["2349021540840@s.whatsapp.net"]
+let blockedUsers=[]
+let customCommands={}
+
+let settings={
+antilink:false,
+welcome:false,
+goodbye:false,
+autoreply:true,
+autolock:false
+}
+
+let botSettings={
+mode:"public",
+warnLimit:3
+}
+
+let warnings={}
+let stats={messages:0,commands:0}
+
+let qrImage=null
 let pairingCode=null
 let botStatus="offline"
 
-let sock=null
-let groups=[]
-let customCommands={}
+let sock
 
-const autoReplies={
-hello:["Hello 👋","Hi there 😄","Hey!"],
-hi:["Hello 👋","Hi 😄","Hey!"],
-thanks:["You're welcome 😊","No problem 👍"],
-lol:["😂","🤣","Lmao"],
-good:["Nice 👍","Great!"],
-morning:["Good morning ☀️"],
-night:["Good night 🌙"],
-bye:["Bye 👋","See you later"],
-bot:["Yes? 🤖","How can I help?"]
+////////////////////////////////////////////////////
+//////////////// HELPER FUNCTIONS //////////////////
+////////////////////////////////////////////////////
+
+function isOwner(user){
+return owners.includes(user)
 }
+
+async function isAdmin(group,user){
+
+try{
+let meta=await sock.groupMetadata(group)
+
+let admins=meta.participants
+.filter(p=>p.admin)
+.map(p=>p.id)
+
+return admins.includes(user)
+
+}catch{
+return false
+}
+
+}
+
+////////////////////////////////////////////////////
+//////////////// WEB DASHBOARD /////////////////////
+////////////////////////////////////////////////////
 
 const app=express()
 app.use(express.json())
 app.use(express.urlencoded({extended:true}))
 
-// DASHBOARD
+let logged=false
+
 app.get("/",(req,res)=>{
 
 if(!logged){
+
 return res.send(`
-<h2>Nova Bot Login</h2>
+<h2>Gibborlee Bot Dashboard Login</h2>
 <form method="POST" action="/login">
-<input type="password" name="password"/>
+<input type="password" name="password">
 <button>Login</button>
 </form>
 `)
+
 }
 
 res.send(`
-<h1>Nova Ultra Bot Dashboard</h1>
+<h1>🌌 Gibborlee Bot Dashboard</h1>
 
 <p>Status: ${botStatus}</p>
 
-<h3>QR Login</h3>
-<img src="${qrData||""}" width="300"/>
+<img src="${qrImage||""}" width="250"/>
 
-<h3>Pairing Code</h3>
-${pairingCode||"Not generated"}
+<h3>Pairing Code: ${pairingCode||"None"}</h3>
 
-<input id="num" placeholder="234xxxxxxxxxx">
-<button onclick="pair()">Generate Pair Code</button>
+<hr>
+
+<h2>Bot Mode</h2>
+<button onclick="toggleMode()">Toggle Mode</button>
+
+<h2>Warn Limit</h2>
+<input id="limit">
+<button onclick="setLimit()">Update</button>
+
+<h2>AntiLink</h2>
+<button onclick="toggleAnti()">Toggle</button>
+
+<hr>
+
+<h2>Owner Manager</h2>
+
+<input id="own">
+<button onclick="addOwner()">Add</button>
+<button onclick="removeOwner()">Remove</button>
+
+<div id="owners"></div>
 
 <hr>
 
 <h2>Create Command</h2>
 
-<input id="name" placeholder="command">
-<input id="reply" placeholder="reply">
+<input id="cmd" placeholder="command name">
+<input id="reply" placeholder="reply text">
+<button onclick="createCmd()">Create</button>
 
-<button onclick="create()">Create</button>
+<hr>
 
-<h2>Commands</h2>
+<h2>Block User</h2>
 
-<div id="cmds"></div>
-
-<h2>Connected Groups</h2>
-
-<pre>${JSON.stringify(groups,null,2)}</pre>
+<input id="user">
+<button onclick="block()">Block</button>
 
 <script>
 
-async function load(){
-
-let r=await fetch("/commands")
-let d=await r.json()
-
-let html=""
-
-for(let c in d){
-
-html+=\`
-<div>
-<b>.\${c}</b> - \${d[c].reply}
-<button onclick="del('\${c}')">Delete</button>
-</div>
-\`
+async function toggleMode(){
+await fetch("/toggle-mode",{method:"POST"})
 }
 
-document.getElementById("cmds").innerHTML=html
-
+async function toggleAnti(){
+await fetch("/toggle-antilink",{method:"POST"})
 }
 
-async function create(){
+async function setLimit(){
 
-let name=document.getElementById("name").value
-let reply=document.getElementById("reply").value
+let l=document.getElementById("limit").value
 
-await fetch("/create",{
+await fetch("/warnlimit",{
 method:"POST",
 headers:{"Content-Type":"application/json"},
-body:JSON.stringify({name,reply})
+body:JSON.stringify({limit:l})
 })
-
-load()
 
 }
 
-async function del(name){
+async function addOwner(){
 
-await fetch("/delete",{
+let n=document.getElementById("own").value
+
+await fetch("/add-owner",{
 method:"POST",
 headers:{"Content-Type":"application/json"},
-body:JSON.stringify({name})
+body:JSON.stringify({number:n})
 })
-
-load()
 
 }
 
-async function pair(){
+async function removeOwner(){
 
-let number=document.getElementById("num").value
+let n=document.getElementById("own").value
 
-await fetch("/pair",{
+await fetch("/remove-owner",{
 method:"POST",
 headers:{"Content-Type":"application/json"},
-body:JSON.stringify({number})
+body:JSON.stringify({number:n})
 })
-
-alert("Pair code generated")
 
 }
 
-load()
+async function createCmd(){
+
+let c=document.getElementById("cmd").value
+let r=document.getElementById("reply").value
+
+await fetch("/create-command",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({cmd:c,reply:r})
+})
+
+}
+
+async function block(){
+
+let u=document.getElementById("user").value
+
+await fetch("/block-user",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({user:u})
+})
+
+}
 
 </script>
 `)
 })
 
 app.post("/login",(req,res)=>{
-
-if(req.body.password===PASSWORD){
+if(req.body.password===DASH_PASSWORD){
 logged=true
 res.redirect("/")
 }else{
 res.send("Wrong password")
 }
-
 })
 
-app.get("/commands",(req,res)=>{
+app.post("/toggle-mode",(req,res)=>{
+botSettings.mode=botSettings.mode==="public"?"private":"public"
+res.json(botSettings)
+})
+
+app.post("/toggle-antilink",(req,res)=>{
+settings.antilink=!settings.antilink
+res.json(settings)
+})
+
+app.post("/warnlimit",(req,res)=>{
+botSettings.warnLimit=parseInt(req.body.limit)||3
+res.json(botSettings)
+})
+
+app.post("/add-owner",(req,res)=>{
+let jid=req.body.number+"@s.whatsapp.net"
+if(!owners.includes(jid)) owners.push(jid)
+res.json(owners)
+})
+
+app.post("/remove-owner",(req,res)=>{
+let jid=req.body.number+"@s.whatsapp.net"
+owners=owners.filter(o=>o!==jid)
+res.json(owners)
+})
+
+app.post("/create-command",(req,res)=>{
+customCommands[req.body.cmd]=req.body.reply
 res.json(customCommands)
 })
 
-app.post("/create",(req,res)=>{
-
-let {name,reply}=req.body
-name=name.toLowerCase()
-
-customCommands[name]={reply}
-
-res.json({status:"ok"})
-
+app.post("/block-user",(req,res)=>{
+let jid=req.body.user+"@s.whatsapp.net"
+blockedUsers.push(jid)
+res.json(blockedUsers)
 })
 
-app.post("/delete",(req,res)=>{
+app.listen(PORT,()=>console.log("Dashboard running"))
 
-delete customCommands[req.body.name]
+////////////////////////////////////////////////////
+//////////////// WHATSAPP BOT /////////////////////
+////////////////////////////////////////////////////
 
-res.json({status:"deleted"})
-
-})
-
-app.post("/pair",(req,res)=>{
-
-requestPair(req.body.number)
-
-res.json({status:"pair requested"})
-
-})
-
-app.listen(PORT,()=>{
-console.log("Dashboard running on port",PORT)
-})
-
-// BOT START
 async function startBot(){
 
 const {state,saveCreds}=await useMultiFileAuthState("session")
@@ -221,116 +286,191 @@ sock.ev.on("connection.update",async(update)=>{
 const {connection,qr,lastDisconnect}=update
 
 if(qr){
-
 qrcode.generate(qr,{small:true})
-qrData=await QRCode.toDataURL(qr)
-
-console.log("Scan QR to login")
-
+qrImage=await QRCode.toDataURL(qr)
 }
 
 if(connection==="open"){
-
 botStatus="online"
-
-console.log("Bot connected")
-
-let g=await sock.groupFetchAllParticipating()
-groups=Object.values(g).map(x=>x.subject)
-
 }
 
 if(connection==="close"){
 
-botStatus="offline"
-
 let reason=lastDisconnect?.error?.output?.statusCode
 
 if(reason!==DisconnectReason.loggedOut){
-
-console.log("Reconnecting...")
 startBot()
-
-}else{
-
-console.log("Session logged out. Delete session folder.")
-
 }
 
 }
 
 })
 
-// MESSAGE HANDLER
+////////////////////////////////////////////////////
+//////////////// MESSAGE HANDLER //////////////////
+////////////////////////////////////////////////////
+
 sock.ev.on("messages.upsert",async({messages})=>{
 
 let m=messages[0]
 if(!m.message) return
 
+stats.messages++
+
 let from=m.key.remoteJid
 let sender=m.key.participant||from
+
+if(blockedUsers.includes(sender)) return
 
 let text=
 m.message.conversation||
 m.message.extendedTextMessage?.text||
 ""
 
-let command=
-text.startsWith(PREFIX)
-?text.slice(1).split(" ")[0].toLowerCase()
-:null
+////////////////////////////////////////////////////
+//////////////// ANTI LINK WARN ///////////////////
+////////////////////////////////////////////////////
 
-// AUTO REPLY
-let t=text.toLowerCase()
+if(settings.antilink && from.endsWith("@g.us") && text.includes("chat.whatsapp.com")){
 
-if(autoReplies[t]){
+if(await isAdmin(from,sender)) return
 
-let arr=autoReplies[t]
-let reply=arr[Math.floor(Math.random()*arr.length)]
+if(!warnings[sender]) warnings[sender]=0
 
-await sock.sendMessage(from,{text:reply})
+warnings[sender]++
 
-}
-
-// ANTI LINK
-if(text.includes("chat.whatsapp.com")){
+let count=warnings[sender]
 
 await sock.sendMessage(from,{
-text:"Group links not allowed 🚫"
+text:`⚠ Anti-Link Warning ${count}/${botSettings.warnLimit}`,
+mentions:[sender]
 })
+
+if(count>=botSettings.warnLimit){
+
+await sock.groupParticipantsUpdate(from,[sender],"remove")
+
+warnings[sender]=0
 
 }
 
-// CUSTOM COMMAND
+}
+
+////////////////////////////////////////////////////
+//////////////// COMMAND HANDLER //////////////////
+////////////////////////////////////////////////////
+
+if(!text.startsWith(PREFIX)) return
+
+let command=text.slice(1).split(" ")[0].toLowerCase()
+
+stats.commands++
+
+////////////////////////////////////////////////////
+//////////////// CUSTOM COMMANDS //////////////////
+////////////////////////////////////////////////////
+
 if(customCommands[command]){
 
-await sock.sendMessage(from,{
-text:customCommands[command].reply
+return sock.sendMessage(from,{
+text:customCommands[command]
 })
-
-return
 
 }
 
-// MENU
+////////////////////////////////////////////////////
+//////////////// MENU /////////////////////////////
+////////////////////////////////////////////////////
+
 if(command==="menu"){
 
-await sock.sendMessage(from,{
-text:"Commands:\n.menu\n.ping\n.vv\n.savepp"
+let menu=`
+🌌 Gibborlee BOT
+
+👑 Owner: 2349021540840
+⚡ Status: ${botStatus}
+📌 Mode: ${botSettings.mode}
+
+📊 Stats
+Messages: ${stats.messages}
+Commands: ${stats.commands}
+
+📋 General
+.menu
+.ping
+
+👑 Owner Commands
+.vv
+.savepp
+
+🛡 Admin
+.warn
+.hidetags
+.antilink
+`
+
+await sock.sendMessage(from,{text:menu})
+
+}
+
+////////////////////////////////////////////////////
+//////////////// PING /////////////////////////////
+////////////////////////////////////////////////////
+
+if(command==="ping"){
+sock.sendMessage(from,{text:"🏓 Pong"})
+}
+
+////////////////////////////////////////////////////
+//////////////// WARN /////////////////////////////
+////////////////////////////////////////////////////
+
+if(command==="warn"){
+
+if(!await isAdmin(from,sender)) return
+
+let target=m.message.extendedTextMessage
+?.contextInfo?.mentionedJid?.[0]
+
+if(!warnings[target]) warnings[target]=0
+
+warnings[target]++
+
+sock.sendMessage(from,{
+text:`⚠ Warn ${warnings[target]}/${botSettings.warnLimit}`
 })
 
 }
 
-// PING
-if(command==="ping"){
-await sock.sendMessage(from,{text:"Pong 🏓"})
+////////////////////////////////////////////////////
+//////////////// HIDETAGS /////////////////////////
+////////////////////////////////////////////////////
+
+if(command==="hidetags"){
+
+if(!await isAdmin(from,sender)) return
+
+let meta=await sock.groupMetadata(from)
+let members=meta.participants.map(p=>p.id)
+
+let msg=text.replace(".hidetags","")
+
+sock.sendMessage(from,{
+text:msg,
+mentions:members
+})
+
 }
 
-// VIEW ONCE
+////////////////////////////////////////////////////
+//////////////// OWNER COMMANDS ///////////////////
+////////////////////////////////////////////////////
+
 if(command==="vv"){
 
-let quoted=
-m.message?.extendedTextMessage?.contextInfo?.quotedMessage
+if(!isOwner(sender)) return
+
+let quoted=m.message.extendedTextMessage?.contextInfo?.quotedMessage
 
 if(!quoted) return
 
@@ -338,7 +478,7 @@ let type=Object.keys(quoted)[0]
 
 let stream=await downloadContentFromMessage(
 quoted[type],
-type==="imageMessage"?"image":"video"
+type.replace("Message","")
 )
 
 let buffer=Buffer.from([])
@@ -348,15 +488,19 @@ buffer=Buffer.concat([buffer,chunk])
 }
 
 await sock.sendMessage(from,{
-[type==="imageMessage"?"image":"video"]:buffer
+[type.includes("image")?"image":"video"]:buffer
 })
 
 }
 
-// PROFILE PIC
 if(command==="savepp"){
 
-let url=await sock.profilePictureUrl(sender,"image")
+if(!isOwner(sender)) return
+
+let user=
+m.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0]||sender
+
+let url=await sock.profilePictureUrl(user,"image")
 
 await sock.sendMessage(from,{
 image:{url},
@@ -366,25 +510,6 @@ caption:"Profile picture"
 }
 
 })
-
-}
-
-// PAIRING CODE
-async function requestPair(number){
-
-try{
-
-let code=await sock.requestPairingCode(number)
-
-pairingCode=code
-
-console.log("Pairing code:",code)
-
-}catch(err){
-
-console.log("Pairing error",err)
-
-}
 
 }
 
