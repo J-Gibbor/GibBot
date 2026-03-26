@@ -1,3 +1,27 @@
 {
-  "botMode": "private"
+  "botMode": "private",
+  "permittedUsers": {
+    "2349012345678@s.whatsapp.net": ["!tagall","!hidetag","!sticker"],
+    "2349012345679@s.whatsapp.net": ["!vv","!saveprofile"]
+},
+  "autoReply": {
+    "enabled": true,
+    "keywords": {
+      "hi": ["Hello 👋!", "Hey there! 😄", "Hi! How are you?"],
+      "hello": ["Hello! 😊", "Hi there! 👋", "Hey!"],
+      "hey": ["Hey! 😎", "Hello! 👋", "Hiya! 😄"],
+      "good morning": ["Good morning! ☀️", "Morning! Have a great day! 🌞", "Hello! 🌅"],
+      "good night": ["Good night! 🌙", "Sleep tight! 😴", "Sweet dreams! ✨"],
+      "bye": ["Goodbye! 😢", "See you later! 👋", "Take care!"],
+      "thanks": ["You're welcome! 😊", "No problem! 👍", "Anytime! 😄"],
+      "lol": ["😂😂", "Haha 😆", "🤣"],
+      "congrats": ["Congratulations! 🎉", "Well done! 👏", "Awesome! 🎊"],
+      "sorry": ["It's okay! 🤗", "No worries! 🙏", "All good! 🙂"]
+    },
+    "welcome": { "enabled": true },
+  "goodbye": { "enabled": true },
+  "antiLinks": { "enabled": true },
+  "autoReply": { "enabled": true },
+}
+
 }

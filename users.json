@@ -1,3 +1,9 @@
 {
-  "banned": []
+  "banned": [],
+  "muted": [],
+  "admins": ["2347044626110@s.whatsapp.net"],
+   "restrictedCommands": {"!vv":["group_jid1@g.us"]},
+  "warnings": {
+    "2349012345678@s.whatsapp.net": 2
+}
 }
